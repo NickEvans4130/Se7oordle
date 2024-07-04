@@ -224,4 +224,4 @@ async def test(ctx):
     await ctx.send(embed=embed)
 
 # Run the bot
-bot.run(TOKEN)  # replace with your bot token
+bot.run(TOKEN) 
