@@ -7,12 +7,12 @@ from dotenv import load_dotenv
 import random as r
 from datetime import datetime, timedelta
 import asyncio
-from discord.ext.commands import CommandError
+from discord.ext.commands import CommandError, has_permissions
+
 
 load_dotenv()
-TOKEN = "token"
+TOKEN = "MTI0OTc4OTM1NTQ2NDIwMDIyMw.GR0pjj.m-WbkIFIeulbR4E8VhlZCKSj4yPwBAKXaR6G2k"
 CHANNEL_ID = 1252254456209346623
-
 intents = discord.Intents.default()
 intents.message_content = True
 intents.messages = True
@@ -123,6 +123,39 @@ grey_emoji_ids = {
     'Z': '<:Z_grey:1253699777405780089>',
 }
 
+
+
+def load_settings(guild_id):
+    try:
+        with open('settings.json', 'r') as f:
+            settings = json.load(f)
+        return settings.get(str(guild_id), {"frequency": 24, "cooldown": 300})  # Default values
+    except FileNotFoundError:
+        return {"frequency": 24, "cooldown": 300}  # Default values
+
+def save_settings(guild_id, frequency, cooldown):
+    try:
+        with open('settings.json', 'r') as f:
+            settings = json.load(f)
+    except FileNotFoundError:
+        settings = {}
+    
+    settings[str(guild_id)] = {"frequency": frequency, "cooldown": cooldown}
+    
+    with open('settings.json', 'w') as f:
+        json.dump(settings, f)
+
+def ensure_setup(func):
+    async def wrapper(ctx, *args, **kwargs):
+        guild_id = str(ctx.guild.id)
+        settings = load_settings()
+
+        if guild_id not in settings:
+            await ctx.send("This server is not set up yet. Please run the `?setup` command to configure the bot.")
+        else:
+            await func(ctx, *args, **kwargs)
+    return wrapper
+
 def load_word_list(filename='word_list.txt'):
     global word_list
     try:
@@ -166,7 +199,7 @@ def generate_new_word():
 
     # Select a new word from the available list
     new_word = r.choice(available_words).lower()
-    
+
     # Add the new word to recent_words and ensure the list doesn't exceed 7 items
     recent_words.append(new_word)
     if len(recent_words) > 7*frequency:
@@ -248,12 +281,20 @@ def finish_unsolved_game():
 # Call these functions in the appropriate places (on bot startup and game reset):
 @bot.event
 async def on_ready():
+    global frequency
+
     print(f'Logged in as {bot.user.name}')
     load_word_list()
     load_scores()
     load_recent_words()
     load_games_played()
     load_leaderboard()
+
+    settings = load_settings()
+    server_id = str(bot.guilds[0].id)  # Assuming bot is in one server; adapt for multiple servers if needed.
+
+    if server_id in settings:
+        frequency = settings[server_id].get('frequency', 24)
     
     now = datetime.now()
     delay = (60 - now.minute) * 60 - now.second
@@ -262,35 +303,39 @@ async def on_ready():
     change_word.start()
 
 
-
+@ensure_setup
 @tasks.loop(hours=1)
 async def change_word():
-    global current_word, last_guess_time, user_scores, last_guess_result, current_greens, current_yellows
+    for guild in bot.guilds:
+        settings = load_settings(guild.id)
+        global current_word, last_guess_time, user_scores, last_guess_result, current_greens, current_yellows
 
-    # Finish the unsolved game before posting the new word
-    finish_unsolved_game()
+        finish_unsolved_game()  # You might need to adapt this function to work per server
 
-    # Generate and post the new word
-    current_word = generate_new_word()
-    print(current_word)
+        current_word = generate_new_word()
+        print(current_word)
 
-    # Notify the channel
-    channel = bot.get_channel(CHANNEL_ID)
-    if channel is not None:
-        embed = discord.Embed(
-            title="New Word",
-            description="A new word has been chosen! Start guessing the 7-letter word.",
-            color=discord.Color.blue()
-        )
-        await channel.send(embed=embed)
-    else:
-        print(f"Channel with ID {CHANNEL_ID} not found.")
+        channel = bot.get_channel(CHANNEL_ID)  # You might need to make CHANNEL_ID per server as well
+        if channel is not None:
+            embed = discord.Embed(
+                title="New Word",
+                description="A new word has been chosen! Start guessing the 7-letter word.",
+                color=discord.Color.blue()
+            )
+            await channel.send(embed=embed)
+        else:
+            print(f"Channel with ID {CHANNEL_ID} not found.")
 
 
+@ensure_setup
 @bot.command()
 async def guess(ctx, word: str):
     global current_word, last_guess_time, user_scores, last_guess_result, current_greens, current_yellows
     user = ctx.author
+    guild_id = ctx.guild.id
+    settings = load_settings(guild_id)
+    cooldown = settings['cooldown']
+    
     word = word.lower()
 
     if word not in word_list:
@@ -312,12 +357,12 @@ async def guess(ctx, word: str):
         return
 
     now = datetime.now()
-    if user.id in last_guess_time and (now - last_guess_time[user.id]).total_seconds() < 300:
-        remaining_time = timedelta(seconds=300) - (now - last_guess_time[user.id])
+    if user.id in last_guess_time and (now - last_guess_time[user.id]).total_seconds() < cooldown:
+        remaining_time = timedelta(seconds=cooldown) - (now - last_guess_time[user.id])
         minutes, seconds = divmod(remaining_time.total_seconds(), 60)
         embed = discord.Embed(
             title="Too Soon!",
-            description=f"{user.display_name}, you can only guess once every 5 minutes. Try again in {int(minutes)} minutes and {int(seconds)} seconds.",
+            description=f"{user.display_name}, you can only guess once every {cooldown // 60} minutes. Try again in {int(minutes)} minutes and {int(seconds)} seconds.",
             color=discord.Color.red()
         )
         await ctx.send(embed=embed)
@@ -358,6 +403,8 @@ async def guess(ctx, word: str):
                 current_word_copy[current_word_copy.index(word[i])] = None
             else:
                 guess_result[i] = grey_emoji_ids[word[i].upper()]
+
+
 
     user_scores[user_id_str] += points
     if user_id_str not in last_guess_result:
@@ -412,7 +459,8 @@ async def guess(ctx, word: str):
         for participant in user_scores:
             user_scores[participant] += 2
         save_scores()
-
+        
+@ensure_setup
 @bot.command()
 async def top(ctx):
     global user_scores, user_games_played, game_start_time
@@ -521,6 +569,14 @@ async def stream(ctx):
 
     # Send the embed in the channel
     await ctx.send(embed=embed)
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def setup(ctx, frequency: int, cooldown: int):
+    guild_id = ctx.guild.id
+    save_settings(guild_id, frequency, cooldown)
+    await ctx.send(f"Settings updated! Frequency: {frequency} hours, Cooldown: {cooldown} seconds.")
+
 
 bot.run(TOKEN)
 
